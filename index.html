@@ -124,7 +124,7 @@
                 <div><i class="fas fa-layer-group"></i> 层数: <b>{{ modelConfig.num_hidden_layers }}</b></div>
                 <div><i class="fas fa-ruler-horizontal"></i> 维度: <b>{{ modelConfig.hidden_size }}</b></div>
                 <div><i class="fas fa-brain"></i> 注意力头: <b>{{ modelConfig.num_attention_heads }}</b></div>
-                <div><i class="fas fa-key"></i> KV头(GQA): <b>{{ modelConfig.num_key_value_heads || modelConfig.num_attention_heads }}</b></div>
+                <div><i class="fas fa-key"></i> Attention: <b>{{ attnType }}</b></div>
                 <div><i class="fas fa-weight-hanging"></i> 估算参数量: <b>{{ (estimatedParams / 1000000000).toFixed(2) }}B</b></div>
             </div>
         </div>
@@ -174,7 +174,7 @@
                 <div class="p-3 bg-green-50 rounded border border-green-100">
                     <div class="text-gray-500 mb-1">KV Cache (上下文)</div>
                     <div class="text-xl font-semibold text-green-700">{{ vramStats.kv.toFixed(2) }} GB</div>
-                    <div class="text-xs text-gray-400 mt-1">GQA: {{ isGQA ? '已开启 ✅' : '未开启' }}</div>
+                    <div class="text-xs text-gray-400 mt-1">Type: {{ attnType }} {{ isMLA ? '✨' : (isGQA ? '✅' : '') }}</div>
                 </div>
                 <div class="p-3 bg-gray-50 rounded border border-gray-100">
                     <div class="text-gray-500 mb-1">系统开销 (Overhead)</div>
@@ -294,20 +294,28 @@
                 const L = c.num_hidden_layers || 32;
                 const H = c.hidden_size || 4096;
                 const V = c.vocab_size || 32000;
-                const I = c.intermediate_size || (H * 4); // 如果没有，通常是 4H，但在 Llama SwiGLU 中通常更大
+                
+                // Expert Intermediate Size
+                // DeepSeek V2/V3 uses moe_intermediate_size
+                const expertSize = c.moe_intermediate_size || c.intermediate_size || (H * 4);
                 
                 // MoE (Mixture of Experts) 检测
-                // Mixtral 等模型会有 num_local_experts 或 num_experts
-                const numExperts = c.num_local_experts || c.num_experts || 1;
-
-                // 简单估算公式 (Transformer Decoder only)
-                // Params = L * (Attn + MLP) + Embeddings
-                // Attn = 4 * H^2 (query, key, value, out)
-                // MLP (SwiGLU) = 3 * H * I (gate, up, down) * numExperts
-                // Embed = V * H
+                // n_routed_experts: DeepSeek V2/V3
+                // num_local_experts: Mixtral
+                // num_experts: Qwen-MoE
+                const numRoutedExperts = c.n_routed_experts || c.num_local_experts || c.num_experts || 0;
+                const numSharedExperts = c.n_shared_experts || 0;
                 
+                const isMoE = numRoutedExperts > 0;
+                const totalExperts = isMoE ? (numRoutedExperts + numSharedExperts) : 1;
+
+                // 简单估算公式
+                // Attn = 4 * H^2 (query, key, value, out)
                 const attnParams = 4 * H * H; 
-                const mlpParams = numExperts * 3 * H * I;
+                
+                // MLP (SwiGLU) = 3 * H * expertSize * totalExperts
+                const mlpParams = totalExperts * 3 * H * expertSize;
+                
                 const layerParams = attnParams + mlpParams;
                 
                 const total = (L * layerParams) + (V * H);
@@ -315,13 +323,22 @@
                 return total;
             });
 
-            // 2. 判断是否是 GQA
-            const isGQA = computed(() => {
-                if (!modelConfig.value) return false;
-                const kv = modelConfig.value.num_key_value_heads;
-                const attn = modelConfig.value.num_attention_heads;
-                return kv && kv < attn;
+            // 2. Attention 类型检测 (GQA / MLA)
+            const attnType = computed(() => {
+                if (!modelConfig.value) return 'Standard';
+                const c = modelConfig.value;
+                // MLA (DeepSeek V2/V3)
+                if (c.kv_lora_rank && c.kv_lora_rank > 0) return 'MLA';
+                // GQA
+                const kv = c.num_key_value_heads;
+                const attn = c.num_attention_heads;
+                if (kv && kv < attn) return 'GQA';
+                return 'Standard';
             });
+
+            // 兼容旧变量用于显示
+            const isGQA = computed(() => attnType.value === 'GQA');
+            const isMLA = computed(() => attnType.value === 'MLA');
 
             // 3. 计算各项显存
             const vramStats = computed(() => {
@@ -342,17 +359,29 @@
                 const weightsVram = (estimatedParams.value * bpw) / (1024 ** 3); // GB
 
                 // B. KV Cache 显存
-                // Cache = 2 * Layers * SeqLen * KV_Heads * HeadDim * Precision(2 bytes for FP16 cache)
                 const c = modelConfig.value;
                 const layers = c.num_hidden_layers;
                 const seq = contextLength.value;
-                const heads = c.num_attention_heads;
-                const kvHeads = c.num_key_value_heads || heads;
-                const headDim = c.hidden_size / heads;
                 
-                // KV Cache 总是默认 FP16 (2 bytes)，即使权重是 Int4，KV Cache 很少量化，除非开启 KV Cache Quantization
-                const kvBytes = 2 * layers * seq * kvHeads * headDim * 2; 
-                const kvVram = kvBytes / (1024 ** 3);
+                let kvBytesPerToken = 0;
+
+                if (attnType.value === 'MLA') {
+                    // DeepSeek MLA: Compressed KV
+                    // Cache = (kv_lora_rank + qk_rope_head_dim) * Layers
+                    const kvLoraRank = c.kv_lora_rank || 512;
+                    const qkRopeHeadDim = c.qk_rope_head_dim || 64;
+                    const dim = kvLoraRank + qkRopeHeadDim;
+                    kvBytesPerToken = layers * dim * 2; // FP16 (2 bytes)
+                } else {
+                    // Standard / GQA
+                    const heads = c.num_attention_heads;
+                    const kvHeads = c.num_key_value_heads || heads;
+                    const headDim = c.hidden_size / heads;
+                    // Cache = 2 * Layers * KV_Heads * HeadDim * 2
+                    kvBytesPerToken = 2 * layers * kvHeads * headDim * 2; 
+                }
+                
+                const kvVram = (kvBytesPerToken * seq) / (1024 ** 3);
 
                 // C. 系统开销 (Overhead)
                 // 包含 CUDA Context (约 500MB-1GB) + Activation Buffer (临时变量)
@@ -392,7 +421,7 @@
             return {
                 modelId, hfToken, loading, error, modelConfig, 
                 contextLength, quantization, setModel, fetchModelInfo,
-                estimatedParams, isGQA, vramStats, totalVram, gpuRecommendation
+                estimatedParams, isGQA, isMLA, attnType, vramStats, totalVram, gpuRecommendation
             };
         }
     }).mount('#app');
