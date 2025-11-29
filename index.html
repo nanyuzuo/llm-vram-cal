@@ -85,16 +85,26 @@
         <div v-if="modelConfig" class="animate-fade-in">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 <!-- 2. 量化选择 -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">量化精度 (Quantization)</label>
-                    <select v-model="quantization" class="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none">
-                        <option value="fp16">BF16 / FP16 (原版)</option>
-                        <option value="q8">Int8 (8-bit)</option>
-                        <option value="q6_k">Q6_K (GGUF)</option>
-                        <option value="q5_k_m">Q5_K_M (推荐均衡)</option>
-                        <option value="q4_k_m">Q4_K_M (最常用)</option>
-                        <option value="q3_k_m">Q3_K_M (极限压缩)</option>
-                    </select>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">模型权重精度</label>
+                        <select v-model="quantization" class="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                            <option value="fp16">BF16 / FP16 (原版)</option>
+                            <option value="q8">Int8 (8-bit)</option>
+                            <option value="q6_k">Q6_K (GGUF)</option>
+                            <option value="q5_k_m">Q5_K_M (推荐均衡)</option>
+                            <option value="q4_k_m">Q4_K_M (最常用)</option>
+                            <option value="q3_k_m">Q3_K_M (极限压缩)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">KV Cache 精度</label>
+                        <select v-model="kvPrecision" class="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                            <option value="fp16">FP16 (默认)</option>
+                            <option value="int8">Int8 / FP8</option>
+                            <option value="int4">Int4</option>
+                        </select>
+                    </div>
                 </div>
 
                 <!-- 3. 上下文长度滑块 -->
@@ -207,6 +217,7 @@
             // 用户设置
             const contextLength = ref(8192);
             const quantization = ref('q4_k_m');
+            const kvPrecision = ref('fp16');
 
             // 快捷设置模型
             const setModel = (name) => {
@@ -363,6 +374,10 @@
                 const layers = c.num_hidden_layers;
                 const seq = contextLength.value;
                 
+                // KV 量化系数
+                const kvBpwMap = { 'fp16': 2.0, 'int8': 1.0, 'int4': 0.5 };
+                const kvBpw = kvBpwMap[kvPrecision.value] || 2.0;
+
                 let kvBytesPerToken = 0;
 
                 if (attnType.value === 'MLA') {
@@ -371,14 +386,17 @@
                     const kvLoraRank = c.kv_lora_rank || 512;
                     const qkRopeHeadDim = c.qk_rope_head_dim || 64;
                     const dim = kvLoraRank + qkRopeHeadDim;
-                    kvBytesPerToken = layers * dim * 2; // FP16 (2 bytes)
+                    kvBytesPerToken = layers * dim * kvBpw; 
                 } else {
                     // Standard / GQA
                     const heads = c.num_attention_heads;
                     const kvHeads = c.num_key_value_heads || heads;
-                    const headDim = c.hidden_size / heads;
-                    // Cache = 2 * Layers * KV_Heads * HeadDim * 2
-                    kvBytesPerToken = 2 * layers * kvHeads * headDim * 2; 
+                    
+                    // 优先使用 config.head_dim，否则使用 hidden/heads
+                    const headDim = c.head_dim || (c.hidden_size / heads);
+                    
+                    // Cache = 2 * Layers * KV_Heads * HeadDim * BytesPerElement
+                    kvBytesPerToken = 2 * layers * kvHeads * headDim * kvBpw; 
                 }
                 
                 const kvVram = (kvBytesPerToken * seq) / (1024 ** 3);
@@ -420,7 +438,7 @@
 
             return {
                 modelId, hfToken, loading, error, modelConfig, 
-                contextLength, quantization, setModel, fetchModelInfo,
+                contextLength, quantization, kvPrecision, setModel, fetchModelInfo,
                 estimatedParams, isGQA, isMLA, attnType, vramStats, totalVram, gpuRecommendation
             };
         }
