@@ -238,9 +238,25 @@
                     if (!response.ok) throw new Error('未找到模型或连接 HF 失败');
                     
                     const data = await response.json();
-                    if (!data.config) throw new Error('无法读取该模型的 Config 信息');
+                    let config = data.config;
 
-                    modelConfig.value = data.config;
+                    // 检查 Config 完整性，如果不完整则直接获取 config.json
+                    // API 返回的 config 有时会缺失 num_hidden_layers 等关键字段 (例如 Qwen 系列)
+                    if (!config || !config.num_hidden_layers || !config.hidden_size) {
+                        try {
+                            const configResponse = await fetch(`https://huggingface.co/${modelId.value}/resolve/main/config.json`, { headers });
+                            if (configResponse.ok) {
+                                const fullConfig = await configResponse.json();
+                                config = { ...config, ...fullConfig };
+                            }
+                        } catch (e) {
+                            console.warn('Fetching config.json failed, falling back to API data');
+                        }
+                    }
+
+                    if (!config) throw new Error('无法读取该模型的 Config 信息');
+
+                    modelConfig.value = config;
                     
                     // 自动调整默认上下文窗口
                     if (data.config.max_position_embeddings) {
