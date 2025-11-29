@@ -93,8 +93,10 @@
                             <option value="q8">Int8 (8-bit)</option>
                             <option value="q6_k">Q6_K (GGUF)</option>
                             <option value="q5_k_m">Q5_K_M (推荐均衡)</option>
-                            <option value="q4_k_m">Q4_K_M (最常用)</option>
-                            <option value="q3_k_m">Q3_K_M (极限压缩)</option>
+                            <option value="q4_k_m">Q4_K_M (GGUF 推荐)</option>
+                            <option value="q3_k_m">Q3_K_M (GGUF 极限)</option>
+                            <option value="gptq_int4">GPTQ-4bit (仅限 N卡)</option>
+                            <option value="awq_int4">AWQ-4bit (仅限 N卡)</option>
                         </select>
                     </div>
                     <div>
@@ -364,7 +366,9 @@
                     'q6_k': 0.75, // approximate
                     'q5_k_m': 0.68,
                     'q4_k_m': 0.60, // 加上 metadata 实际上通常在 0.6 左右
-                    'q3_k_m': 0.48
+                    'q3_k_m': 0.48,
+                    'gptq_int4': 0.55,
+                    'awq_int4': 0.55
                 };
                 const bpw = bpwMap[quantization.value] || 2.0;
                 const weightsVram = (estimatedParams.value * bpw) / (1024 ** 3); // GB
@@ -423,14 +427,35 @@
             // 4. 显卡推荐逻辑
             const gpuRecommendation = computed(() => {
                 const v = totalVram.value;
+                // 判断是否为 N卡 专用量化 (GPTQ/AWQ)
+                const isNvidiaOnly = ['gptq_int4', 'awq_int4'].includes(quantization.value);
+
                 if (v <= 6) return { name: 'RTX 3060 / 4060 (6G+)', vram: '8GB', color: 'border-green-500', badgeBg: 'bg-green-100 text-green-800' };
                 if (v <= 8) return { name: 'RTX 3070 / 4060Ti', vram: '8GB', color: 'border-green-500', badgeBg: 'bg-green-100 text-green-800' };
                 if (v <= 11) return { name: 'RTX 2080Ti / 3080 (10G+)', vram: '12GB', color: 'border-blue-500', badgeBg: 'bg-blue-100 text-blue-800' };
                 if (v <= 12) return { name: 'RTX 3060 12G / 4070', vram: '12GB', color: 'border-blue-500', badgeBg: 'bg-blue-100 text-blue-800' };
-                if (v <= 16) return { name: 'RTX 4080 / 4060Ti 16G', vram: '16GB', color: 'border-indigo-500', badgeBg: 'bg-indigo-100 text-indigo-800' };
-                if (v <= 24) return { name: 'RTX 3090 / 4090', vram: '24GB', color: 'border-purple-500', badgeBg: 'bg-purple-100 text-purple-800' };
-                if (v <= 48) return { name: 'RTX 6000 / A6000', vram: '48GB', color: 'border-purple-500', badgeBg: 'bg-purple-100 text-purple-800' };
-                return { name: 'Mac Studio / 多卡并联', vram: '>48GB', color: 'border-red-500', badgeBg: 'bg-red-100 text-red-800' };
+                
+                // 16GB 档位
+                if (v <= 16) {
+                    const name = isNvidiaOnly ? 'RTX 4080 / 4060Ti 16G' : 'RTX 4080 / Mac M1/M2/M3 Pro';
+                    return { name: name, vram: '16GB', color: 'border-indigo-500', badgeBg: 'bg-indigo-100 text-indigo-800' };
+                }
+                
+                // 24GB 档位
+                if (v <= 24) {
+                    const name = isNvidiaOnly ? 'RTX 3090 / 4090' : 'RTX 4090 / Mac M1/M2/M3 Max';
+                    return { name: name, vram: '24GB', color: 'border-purple-500', badgeBg: 'bg-purple-100 text-purple-800' };
+                }
+                
+                // 48GB 档位
+                if (v <= 48) {
+                    const name = isNvidiaOnly ? 'RTX 6000 / A6000' : 'RTX 6000 / Mac Studio (64G)';
+                    return { name: name, vram: '48GB', color: 'border-purple-500', badgeBg: 'bg-purple-100 text-purple-800' };
+                }
+                
+                // > 48GB
+                const name = isNvidiaOnly ? '多卡并联 (Dual 3090/4090)' : 'Mac Studio (Ultra) / 多卡并联';
+                return { name: name, vram: '>48GB', color: 'border-red-500', badgeBg: 'bg-red-100 text-red-800' };
             });
 
             // 初始化
