@@ -37,7 +37,7 @@
                     v-model="modelId" 
                     @keyup.enter="fetchModelInfo"
                     type="text" 
-                    placeholder="例如: meta-llama/Meta-Llama-3-8B-Instruct" 
+                    placeholder="例如: deepseek-ai/DeepSeek-R1" 
                     class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition"
                 >
                 <button 
@@ -50,11 +50,10 @@
             </div>
             <!-- 快捷推荐 -->
             <div class="mt-2 text-xs text-gray-500 flex gap-2 flex-wrap">
-                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('Qwen/Qwen2.5-7B-Instruct')">Qwen2.5-7B</span>
-                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('meta-llama/Meta-Llama-3-8B-Instruct')">Llama-3-8B (需Token)</span>
-                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('mistralai/Mistral-7B-Instruct-v0.2')">Mistral-7B</span>
-                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('Qwen/Qwen1.5-14B-Chat')">Qwen1.5-14B</span>
-                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('01-ai/Yi-34B-Chat')">Yi-34B</span>
+                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('Qwen/Qwen3-30B-A3B')">Qwen/Qwen3-30B-A3B</span>
+                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('meta-llama/Llama-4-Scout-17B-16E-Instruct')">Llama-4-Scout-17B (需Token)</span>
+                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('deepseek-ai/DeepSeek-OCR')">DeepSeek-OCR</span>
+                <span class="cursor-pointer hover:text-blue-600 underline" @click="setModel('deepseek-ai/DeepSeek-V3.1-Base')">DeepSeek-V3.1-Base</span>
             </div>
 
             <!-- Token 输入 -->
