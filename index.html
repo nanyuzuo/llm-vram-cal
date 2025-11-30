@@ -253,41 +253,60 @@
                     const data = await response.json();
                     let config = data.config;
 
-                    // 检查 Config 完整性，如果不完整则直接获取 config.json
-                    // API 返回的 config 有时会缺失 num_hidden_layers 等关键字段 (例如 Qwen 系列)
+                    // 预处理 Config：映射别名字段
+                    const normalizeConfig = (c) => {
+                        if (!c) return c;
+                        // 映射常见别名到标准字段
+                        if (!c.num_hidden_layers) c.num_hidden_layers = c.n_layers || c.layers || c.depth;
+                        if (!c.hidden_size) c.hidden_size = c.dim || c.d_model || c.n_embd;
+                        if (!c.num_attention_heads) c.num_attention_heads = c.n_heads || c.heads;
+                        if (!c.num_key_value_heads) c.num_key_value_heads = c.n_kv_heads || c.n_heads || c.num_attention_heads;
+                        return c;
+                    };
+
+                    config = normalizeConfig(config);
+
+                    // 检查 Config 完整性
+                    // 1. 如果 API 返回的 config 不完整，尝试获取根目录 config.json
                     if (!config || !config.num_hidden_layers || !config.hidden_size) {
-                        let configErr = null;
                         try {
                             const configResponse = await fetch(`https://huggingface.co/${modelId.value}/resolve/main/config.json`, { headers });
                             if (configResponse.ok) {
                                 const fullConfig = await configResponse.json();
-                                config = { ...config, ...fullConfig };
-                            } else {
-                                if (configResponse.status === 401 || configResponse.status === 403) {
-                                    configErr = '权限不足：无法读取配置文件 (401/403)。请检查 Token 权限或是否已签署模型协议。';
-                                } else {
-                                    configErr = `无法读取配置文件 (Status ${configResponse.status})`;
-                                }
+                                config = { ...config, ...normalizeConfig(fullConfig) };
                             }
                         } catch (e) {
-                            console.warn('Fetching config.json failed', e);
-                            configErr = '读取配置文件失败 (网络错误或跨域限制)';
-                        }
-
-                        // 如果仍然缺少关键字段，抛出具体错误
-                        if (!config || !config.num_hidden_layers || !config.hidden_size) {
-                             throw new Error(configErr || '模型配置文件不完整 (缺失 layers/hidden_size)，且无法通过 API 获取。');
+                            console.warn('Fetching root config.json failed', e);
                         }
                     }
 
-                    if (!config) throw new Error('无法读取该模型的 Config 信息');
+                    // 2. 如果仍然不完整，尝试获取 transformer/config.json (针对 DiT/Diffusion 模型)
+                    if (!config || !config.num_hidden_layers || !config.hidden_size) {
+                        try {
+                            const subConfigResponse = await fetch(`https://huggingface.co/${modelId.value}/resolve/main/transformer/config.json`, { headers });
+                            if (subConfigResponse.ok) {
+                                const subConfig = await subConfigResponse.json();
+                                config = { ...config, ...normalizeConfig(subConfig) };
+                            }
+                        } catch (e) {
+                             console.warn('Fetching transformer/config.json failed', e);
+                        }
+                    }
+
+                    // 最终检查
+                    if (!config || !config.num_hidden_layers || !config.hidden_size) {
+                         throw new Error('模型配置文件不完整 (缺失 layers/hidden_size)，尝试读取 transformer/config.json 也失败。');
+                    }
 
                     modelConfig.value = config;
                     
                     // 自动调整默认上下文窗口
-                    if (data.config.max_position_embeddings) {
-                        const maxCtx = data.config.max_position_embeddings;
+                    if (config.max_position_embeddings) {
+                        const maxCtx = config.max_position_embeddings;
                         contextLength.value = maxCtx > 32000 ? 8192 : Math.min(maxCtx, 8192);
+                    } else if (config.sample_size) {
+                        // 对于图像生成模型，通常没有 text context 概念，给一个默认值
+                        contextLength.value = 1024; 
                     }
 
                 } catch (e) {
