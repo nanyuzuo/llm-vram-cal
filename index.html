@@ -328,32 +328,39 @@
                 const H = c.hidden_size || 4096;
                 const V = c.vocab_size || 32000;
                 
-                // Expert Intermediate Size
-                // DeepSeek V2/V3 uses moe_intermediate_size
-                const expertSize = c.moe_intermediate_size || c.intermediate_size || (H * 4);
-                
-                // MoE (Mixture of Experts) 检测
-                // n_routed_experts: DeepSeek V2/V3
-                // num_local_experts: Mixtral
-                // num_experts: Qwen-MoE
+                // 简单估算 Attention Params
+                // Attn = 4 * H^2 (query, key, value, out)
+                // MLA 会少一些，但这里暂时用通用公式作为近似
+                const attnParams = 4 * H * H; 
+
+                // MLP 参数计算
+                // 1. Dense MLP Params
+                const denseInter = c.intermediate_size || (H * 4);
+                const denseMlpParams = 3 * H * denseInter;
+                const denseLayerParams = attnParams + denseMlpParams;
+
+                // 2. MoE MLP Params
                 const numRoutedExperts = c.n_routed_experts || c.num_local_experts || c.num_experts || 0;
                 const numSharedExperts = c.n_shared_experts || 0;
-                
                 const isMoE = numRoutedExperts > 0;
-                const totalExperts = isMoE ? (numRoutedExperts + numSharedExperts) : 1;
+                
+                if (isMoE) {
+                    const moeInter = c.moe_intermediate_size || denseInter;
+                    const totalExperts = numRoutedExperts + numSharedExperts;
+                    const moeMlpParams = totalExperts * 3 * H * moeInter;
+                    const moeLayerParams = attnParams + moeMlpParams;
 
-                // 简单估算公式
-                // Attn = 4 * H^2 (query, key, value, out)
-                const attnParams = 4 * H * H; 
-                
-                // MLP (SwiGLU) = 3 * H * expertSize * totalExperts
-                const mlpParams = totalExperts * 3 * H * expertSize;
-                
-                const layerParams = attnParams + mlpParams;
-                
-                const total = (L * layerParams) + (V * H);
-                
-                return total;
+                    // 混合架构处理 (如 DeepSeek V3/R1 前几层是 Dense)
+                    const numDenseLayers = c.first_k_dense_replace || 0;
+                    const numMoeLayers = Math.max(0, L - numDenseLayers);
+                    
+                    const total = (numDenseLayers * denseLayerParams) + (numMoeLayers * moeLayerParams) + (V * H);
+                    return total;
+                } else {
+                    // 纯 Dense 模型
+                    const total = (L * denseLayerParams) + (V * H);
+                    return total;
+                }
             });
 
             // 2. Attention 类型检测 (GQA / MLA)
