@@ -327,14 +327,35 @@
                 const L = c.num_hidden_layers || 32;
                 const H = c.hidden_size || 4096;
                 const V = c.vocab_size || 32000;
-                
-                // 简单估算 Attention Params
-                // Attn = 4 * H^2 (query, key, value, out)
-                // MLA 会少一些，但这里暂时用通用公式作为近似
-                const attnParams = 4 * H * H; 
+                const tieEmbeddings = c.tie_word_embeddings === true || c.tie_word_embeddings === undefined; // Default true if undefined (usually), but check specific configs
+
+                // Attention Params Calculation
+                // Standard: 4 * H^2 (Wq, Wk, Wv, Wo)
+                // GQA: Wq(H*H) + Wk(H*H*KV/Head) + Wv(H*H*KV/Head) + Wo(H*H)
+                let attnParams = 0;
+                const heads = c.num_attention_heads || (H / 128);
+                const kvHeads = c.num_key_value_heads || heads;
+                const headDim = c.head_dim || (H / heads);
+
+                if (c.kv_lora_rank && c.kv_lora_rank > 0) {
+                    // MLA (DeepSeek V2/V3) Approximation
+                    // 简单近似：MLA 参数量通常略少于或接近标准 Attention
+                    // 这里为了保持 DeepSeek 估算准确，暂时沿用 4*H^2 或略微调整
+                    // 也可以精确计算：
+                    // DownQ(H*R_q) + UpQ(R_q*H_q) + DownKV(H*R_kv) + UpKV(R_kv * (H_k + H_v)) + Out(H_v*H)
+                    // 简化处理：使用标准 Attention 公式作为上限近似，误差通常在 1-2B 以内
+                    attnParams = 4 * H * H; 
+                } else {
+                    // Standard / GQA
+                    // Q + O = 2 * H^2
+                    // K + V = 2 * H * (KV_Heads * HeadDim)
+                    // Note: H = Heads * HeadDim usually
+                    const kvParams = 2 * H * (kvHeads * headDim);
+                    attnParams = (2 * H * H) + kvParams;
+                }
 
                 // MLP 参数计算
-                // 1. Dense MLP Params
+                // 1. Dense MLP Params (SwiGLU: 3 matrices)
                 const denseInter = c.intermediate_size || (H * 4);
                 const denseMlpParams = 3 * H * denseInter;
                 const denseLayerParams = attnParams + denseMlpParams;
@@ -344,23 +365,48 @@
                 const numSharedExperts = c.n_shared_experts || 0;
                 const isMoE = numRoutedExperts > 0;
                 
+                let moeLayerParams = 0;
                 if (isMoE) {
                     const moeInter = c.moe_intermediate_size || denseInter;
                     const totalExperts = numRoutedExperts + numSharedExperts;
                     const moeMlpParams = totalExperts * 3 * H * moeInter;
-                    const moeLayerParams = attnParams + moeMlpParams;
+                    moeLayerParams = attnParams + moeMlpParams;
+                }
 
+                // 3. 总层数计算
+                let total = 0;
+                if (isMoE) {
                     // 混合架构处理 (如 DeepSeek V3/R1 前几层是 Dense)
                     const numDenseLayers = c.first_k_dense_replace || 0;
                     const numMoeLayers = Math.max(0, L - numDenseLayers);
-                    
-                    const total = (numDenseLayers * denseLayerParams) + (numMoeLayers * moeLayerParams) + (V * H);
-                    return total;
+                    total = (numDenseLayers * denseLayerParams) + (numMoeLayers * moeLayerParams);
                 } else {
                     // 纯 Dense 模型
-                    const total = (L * denseLayerParams) + (V * H);
-                    return total;
+                    total = L * denseLayerParams;
                 }
+
+                // 4. Embeddings & Head
+                const embedParams = V * H;
+                total += embedParams; // Input Embeddings
+                // 如果没有 Tie Embeddings，Output Head 是独立的
+                // 很多现代模型 (Llama 3, DeepSeek) 都是 false
+                if (c.tie_word_embeddings === false) {
+                    total += embedParams; // Output Head
+                }
+
+                // 5. MTP (Multi-Token Prediction) Module - DeepSeek V3/R1
+                const numNextN = c.num_nextn_predict_layers || 0;
+                if (numNextN > 0) {
+                    // MTP 模块通常包含 N 个 MoE 层 (与主干一致) + 独立的 Output Head
+                    // 假设 MTP 层结构与主干 MoE 层一致
+                    const mtpLayerParams = isMoE ? moeLayerParams : denseLayerParams;
+                    // MTP Head (通常需要预测 Token)
+                    const mtpHeadParams = embedParams; 
+                    
+                    total += numNextN * (mtpLayerParams + mtpHeadParams);
+                }
+
+                return total;
             });
 
             // 2. Attention 类型检测 (GQA / MLA)
